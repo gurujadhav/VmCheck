@@ -1,0 +1,39 @@
+name: Desktop VM
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Install desktop + VNC
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y xfce4 xfce4-goodies tightvncserver novnc websockify
+
+      - name: Start VNC server
+        run: |
+          mkdir -p ~/.vnc
+          echo "password" | vncpasswd -f > ~/.vnc/passwd
+          chmod 600 ~/.vnc/passwd
+          vncserver :1 -geometry 1280x720 -depth 24
+        env:
+          USER: runner
+
+      - name: Start noVNC
+        run: |
+          websockify --web /usr/share/novnc/ 6080 localhost:5901 &
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          wget -q https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64 -O cloudflared
+          chmod +x cloudflared
+          ./cloudflared tunnel --url http://localhost:6080 2>&1 | tee /tmp/cloudflared.log &
+          sleep 8
+          grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log | head -1
+
+      - name: Keep alive (6 hours)
+        run: sleep 21600
