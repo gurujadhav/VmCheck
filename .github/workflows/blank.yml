@@ -14,6 +14,13 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y xfce4 xfce4-goodies tightvncserver novnc websockify
 
+      - name: Restore workspace
+        uses: actions/cache@v4
+        with:
+          path: ~/workspace
+          key: vm-workspace-${{ runner.os }}
+          restore-keys: vm-workspace-
+
       - name: Start VNC server
         run: |
           mkdir -p ~/.vnc
@@ -22,6 +29,9 @@ jobs:
           vncserver :1 -geometry 1280x720 -depth 24
         env:
           USER: runner
+
+      - name: Run apt upgrade in background
+        run: sudo apt-get upgrade -y &
 
       - name: Start noVNC
         run: |
@@ -33,7 +43,47 @@ jobs:
           chmod +x cloudflared
           ./cloudflared tunnel --url http://localhost:6080 2>&1 | tee /tmp/cloudflared.log &
           sleep 8
-          grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log | head -1
+          echo "========================================"
+          echo "OPEN THIS URL:"
+          grep -o 'https://.*\.trycloudflare\.com' /tmp/cloudflared.log | head -1 | sed 's|$|/vnc.html|'
+          echo "========================================"
 
-      - name: Keep alive (6 hours)
-        run: sleep 21600
+      - name: Keep alive + periodic cache save
+        run: |
+          mkdir -p ~/workspace
+
+          save_workspace() {
+            echo "💾 Saving workspace..."
+            tar -czf /tmp/workspace-backup.tar.gz -C ~ workspace 2>/dev/null || true
+          }
+
+          # Trap SIGTERM (fired when workflow is cancelled)
+          trap 'save_workspace; echo "Shutdown signal received, workspace saved."; exit 0' SIGTERM SIGINT
+
+          # Periodic save every 30 minutes
+          periodic_save() {
+            while true; do
+              sleep 1800
+              save_workspace
+              echo "✅ Periodic save done at $(date)"
+            done
+          }
+          periodic_save &
+
+          # Check for manual stop file (touch ~/workspace/STOP to gracefully exit)
+          while true; do
+            if [ -f ~/workspace/STOP ]; then
+              echo "🛑 STOP file detected, shutting down..."
+              rm ~/workspace/STOP
+              save_workspace
+              exit 0
+            fi
+            sleep 10
+          done
+
+      - name: Save workspace
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: ~/workspace
+          key: vm-workspace-${{ runner.os }}
