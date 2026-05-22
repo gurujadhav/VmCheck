@@ -18,16 +18,11 @@ jobs:
 
       - name: Install TightVNC + noVNC
         run: |
-          # Install TightVNC silently
-          curl -L https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi -o vnc.msi
+          curl.exe -L https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi -o vnc.msi
           msiexec /i vnc.msi /quiet ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=password
           Start-Sleep -Seconds 5
-
-          # Install Python for websockify
           pip install websockify
-
-          # Download noVNC
-          curl -L https://github.com/novnc/noVNC/archive/refs/heads/master.zip -o novnc.zip
+          curl.exe -L https://github.com/novnc/noVNC/archive/refs/heads/master.zip -o novnc.zip
           Expand-Archive novnc.zip -DestinationPath C:\novnc
         shell: powershell
 
@@ -38,7 +33,7 @@ jobs:
 
       - name: Start Cloudflare Tunnel
         run: |
-          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
+          curl.exe -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
           Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardError "cf.log" -NoNewWindow
           Start-Sleep -Seconds 8
           $url = Get-Content cf.log | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
