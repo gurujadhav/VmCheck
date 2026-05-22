@@ -1,0 +1,68 @@
+name: Windows Desktop VM (Browser)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      - name: Restore workspace
+        uses: actions/cache@v4
+        with:
+          path: C:\workspace
+          key: vm-workspace-windows
+          restore-keys: vm-workspace-windows
+
+      - name: Install TightVNC + noVNC
+        run: |
+          # Install TightVNC silently
+          curl -L https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi -o vnc.msi
+          msiexec /i vnc.msi /quiet ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=password
+          Start-Sleep -Seconds 5
+
+          # Install Python for websockify
+          pip install websockify
+
+          # Download noVNC
+          curl -L https://github.com/novnc/noVNC/archive/refs/heads/master.zip -o novnc.zip
+          Expand-Archive novnc.zip -DestinationPath C:\novnc
+        shell: powershell
+
+      - name: Start noVNC
+        run: |
+          Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow
+        shell: powershell
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          curl -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
+          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardError "cf.log" -NoNewWindow
+          Start-Sleep -Seconds 8
+          $url = Get-Content cf.log | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
+          Write-Host "========================================"
+          Write-Host "OPEN: $url/vnc.html"
+          Write-Host "PASSWORD: password"
+          Write-Host "========================================"
+        shell: powershell
+
+      - name: Keep alive
+        run: |
+          New-Item -ItemType Directory -Force -Path C:\workspace | Out-Null
+          while ($true) {
+            if (Test-Path "C:\workspace\STOP") {
+              Remove-Item "C:\workspace\STOP"
+              exit 0
+            }
+            Start-Sleep -Seconds 10
+          }
+        shell: powershell
+
+      - name: Save workspace
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: C:\workspace
+          key: vm-workspace-windows
