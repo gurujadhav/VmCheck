@@ -26,9 +26,36 @@ jobs:
           Expand-Archive novnc.zip -DestinationPath C:\novnc
         shell: powershell
 
+      - name: Debug check
+        run: |
+          Write-Host "=== TightVNC service ==="
+          Get-Service | Where-Object { $_.Name -like "*vnc*" }
+          Write-Host "=== noVNC folder ==="
+          Test-Path "C:\novnc\noVNC-master"
+          Write-Host "=== Port 5900 ==="
+          netstat -ano | findstr :5900
+        shell: powershell
+
       - name: Start noVNC
         run: |
-          Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow
+          Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow -PassThru
+          $timeout = 30
+          $elapsed = 0
+          while ($elapsed -lt $timeout) {
+            $conn = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
+            if ($conn.TcpTestSucceeded) {
+              Write-Host "✅ noVNC is up on port 6080"
+              break
+            }
+            Write-Host "⏳ Waiting for noVNC... ($elapsed s)"
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+          }
+          if ($elapsed -ge $timeout) {
+            Write-Host "❌ noVNC failed to start!"
+            python -m websockify --version
+            netstat -ano | findstr :6080
+          }
         shell: powershell
 
       - name: Start Cloudflare Tunnel
