@@ -61,8 +61,12 @@ jobs:
       - name: Start Cloudflare Tunnel
         run: |
           curl.exe -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
-          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardError "cf.log" -NoNewWindow
-          Start-Sleep -Seconds 8
+          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardOutput "cf-out.log" -RedirectStandardError "cf.log" -NoNewWindow
+          Start-Sleep -Seconds 10
+          Write-Host "=== STDOUT ==="
+          Get-Content cf-out.log -ErrorAction SilentlyContinue
+          Write-Host "=== STDERR ==="
+          Get-Content cf.log -ErrorAction SilentlyContinue
           $url = Get-Content cf.log | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
           Write-Host "========================================"
           Write-Host "OPEN: $url/vnc.html"
@@ -70,14 +74,40 @@ jobs:
           Write-Host "========================================"
         shell: powershell
 
-      - name: Keep alive
+      - name: Keep alive + auto-restart
         run: |
           New-Item -ItemType Directory -Force -Path C:\workspace | Out-Null
+
           while ($true) {
+            # Graceful stop
             if (Test-Path "C:\workspace\STOP") {
               Remove-Item "C:\workspace\STOP"
+              Write-Host "🛑 STOP detected, exiting..."
               exit 0
             }
+
+            # Restart websockify if dead
+            $novnc = Get-Process python -ErrorAction SilentlyContinue
+            if (-not $novnc) {
+              Write-Host "⚠️ noVNC died, restarting..."
+              Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow
+              Start-Sleep -Seconds 3
+            }
+
+            # Restart cloudflared if dead
+            $cf = Get-Process cloudflared -ErrorAction SilentlyContinue
+            if (-not $cf) {
+              Write-Host "⚠️ cloudflared died, restarting..."
+              Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardError "cf.log" -NoNewWindow
+              Start-Sleep -Seconds 8
+              $url = Get-Content cf.log -ErrorAction SilentlyContinue | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
+              if ($url) {
+                Write-Host "========================================"
+                Write-Host "NEW URL: $url/vnc.html"
+                Write-Host "========================================"
+              }
+            }
+
             Start-Sleep -Seconds 10
           }
         shell: powershell
