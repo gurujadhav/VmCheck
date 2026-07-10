@@ -1,0 +1,74 @@
+name: windows-docker-vnc-persistent
+
+on:
+  workflow_dispatch:
+
+jobs:
+  windows-vnc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      # --- Restore previous disk state, if it exists ---
+      - name: Download previous Windows state
+        uses: actions/download-artifact@v4
+        continue-on-error: true   # first run won't have one yet
+        with:
+          name: windows-storage
+          path: /home/runner/windows-storage
+
+      - name: Run Windows container
+        run: |
+          mkdir -p /home/runner/windows-storage
+          docker run -d \
+            --name windows \
+            --device=/dev/kvm \
+            --cap-add NET_ADMIN \
+            -e VERSION=11 \
+            -e RAM_SIZE=4G \
+            -e CPU_CORES=2 \
+            -p 8006:8006 \
+            -v /home/runner/windows-storage:/storage \
+            dockurr/windows
+
+      - name: Wait for boot
+        run: |
+          for i in {1..60}; do
+            curl -sf http://localhost:8006 && break
+            sleep 10
+          done
+
+      - name: Install cloudflared
+        run: |
+          curl -Lo cloudflared https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-linux-amd64
+          chmod +x cloudflared
+          sudo mv cloudflared /usr/local/bin/
+
+      - name: Start Cloudflare Quick Tunnel
+        run: |
+          nohup cloudflared tunnel --url http://localhost:8006 > tunnel.log 2>&1 &
+          sleep 8
+          grep -o 'https://.*trycloudflare.com' tunnel.log | head -n1
+
+      - name: Keep alive for use
+        run: sleep 3000
+
+      # --- Save disk state back for next run ---
+      - name: Stop container cleanly (flush disk)
+        if: always()
+        run: docker stop windows
+
+      - name: Upload Windows state as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-storage
+          path: /home/runner/windows-storage
+          retention-days: 90
