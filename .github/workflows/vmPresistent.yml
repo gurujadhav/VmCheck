@@ -1,0 +1,143 @@
+name: Windows Desktop VM (Browser)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  desktop:
+    runs-on: windows-latest
+    timeout-minutes: 360
+
+    steps:
+      # 1. Restore the persistent drive using Cache
+      - name: Restore persistent drive
+        uses: actions/cache@v4
+        with:
+          path: D:\persistent
+          key: vm-persistent-windows
+          restore-keys: vm-persistent-windows
+
+      - name: Install TightVNC + noVNC
+        run: |
+          curl.exe -L https://www.tightvnc.com/download/2.8.85/tightvnc-2.8.85-gpl-setup-64bit.msi -o vnc.msi
+          msiexec /i vnc.msi /quiet ADDLOCAL=Server SET_USEVNCAUTHENTICATION=1 VALUE_OF_USEVNCAUTHENTICATION=1 SET_PASSWORD=1 VALUE_OF_PASSWORD=password
+          Start-Sleep -Seconds 5
+
+          # Enable loopback connections in TightVNC registry
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "LoopbackOnly" -Value 0
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "AllowLoopback" -Value 1
+          Set-ItemProperty -Path "HKLM:\SOFTWARE\TightVNC\Server" -Name "AcceptRfbConnections" -Value 1
+
+          # Restart TightVNC service to apply changes
+          Restart-Service -Name "tvnserver" -Force
+          Start-Sleep -Seconds 3
+
+          pip install websockify
+          curl.exe -L https://github.com/novnc/noVNC/archive/refs/heads/master.zip -o novnc.zip
+          Expand-Archive novnc.zip -DestinationPath C:\novnc
+        shell: powershell
+
+      - name: Debug check
+        run: |
+          Write-Host "=== TightVNC service ==="
+          Get-Service | Where-Object { $_.Name -like "*vnc*" }
+          Write-Host "=== noVNC folder ==="
+          Test-Path "C:\novnc\noVNC-master"
+          Write-Host "=== Port 5900 ==="
+          netstat -ano | findstr :5900
+        shell: powershell
+
+      - name: Start noVNC
+        run: |
+          Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow -PassThru
+          $timeout = 30
+          $elapsed = 0
+          while ($elapsed -lt $timeout) {
+            $conn = Test-NetConnection -ComputerName localhost -Port 6080 -WarningAction SilentlyContinue
+            if ($conn.TcpTestSucceeded) {
+              Write-Host "✅ noVNC is up on port 6080"
+              break
+            }
+            Write-Host "⏳ Waiting for noVNC... ($elapsed s)"
+            Start-Sleep -Seconds 2
+            $elapsed += 2
+          }
+          if ($elapsed -ge $timeout) {
+            Write-Host "❌ noVNC failed to start!"
+            python -m websockify --version
+            netstat -ano | findstr :6080
+          }
+        shell: powershell
+
+      - name: Start Cloudflare Tunnel
+        run: |
+          curl.exe -L https://github.com/cloudflare/cloudflared/releases/latest/download/cloudflared-windows-amd64.exe -o cloudflared.exe
+          Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardOutput "cf-out.log" -RedirectStandardError "cf.log" -NoNewWindow
+          Start-Sleep -Seconds 10
+          Write-Host "=== STDOUT ==="
+          Get-Content cf-out.log -ErrorAction SilentlyContinue
+          Write-Host "=== STDERR ==="
+          Get-Content cf.log -ErrorAction SilentlyContinue
+          $url = Get-Content cf.log | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
+          Write-Host "========================================"
+          Write-Host "OPEN: $url/vnc.html"
+          Write-Host "PASSWORD: password"
+          Write-Host "========================================"
+        shell: powershell
+
+      - name: Keep alive + auto-restart
+        run: |
+          # Ensure both directories exist for use during the session
+          New-Item -ItemType Directory -Force -Path D:\persistent | Out-Null
+          New-Item -ItemType Directory -Force -Path D:\artifacts | Out-Null
+
+          while ($true) {
+            # Graceful stop via persistent drive
+            if (Test-Path "D:\persistent\STOP") {
+              Remove-Item "D:\persistent\STOP"
+              Write-Host "🛑 STOP detected, exiting..."
+              exit 0
+            }
+
+            # Restart websockify if dead
+            $novnc = Get-Process python -ErrorAction SilentlyContinue
+            if (-not $novnc) {
+              Write-Host "⚠️ noVNC died, restarting..."
+              Start-Process python -ArgumentList "-m websockify --web C:\novnc\noVNC-master 6080 localhost:5900" -NoNewWindow
+              Start-Sleep -Seconds 3
+            }
+
+            # Restart cloudflared if dead
+            $cf = Get-Process cloudflared -ErrorAction SilentlyContinue
+            if (-not $cf) {
+              Write-Host "⚠️ cloudflared died, restarting..."
+              Start-Process -FilePath ".\cloudflared.exe" -ArgumentList "tunnel --url http://localhost:6080" -RedirectStandardError "cf.log" -NoNewWindow
+              Start-Sleep -Seconds 8
+              $url = Get-Content cf.log -ErrorAction SilentlyContinue | Select-String 'https://.*\.trycloudflare\.com' | ForEach-Object { $_.Matches.Value } | Select-Object -First 1
+              if ($url) {
+                Write-Host "========================================"
+                Write-Host "NEW URL: $url/vnc.html"
+                Write-Host "========================================"
+              }
+            }
+
+            Start-Sleep -Seconds 10
+          }
+        shell: powershell
+
+      # 2. Upload the artifacts (Available for download, NOT restored on next run)
+      - name: Upload session artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: session-artifacts
+          path: D:\artifacts
+          if-no-files-found: ignore
+
+      # 3. Save the persistent drive (Restored on next run)
+      - name: Save persistent drive
+        if: always()
+        uses: actions/cache/save@v4
+        with:
+          path: D:\persistent
+          key: vm-persistent-windows
